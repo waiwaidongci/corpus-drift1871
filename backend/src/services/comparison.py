@@ -5,6 +5,7 @@ from .binning import freeze_numeric,freeze_categorical,count_bins
 from .distributions import divergence
 from .multiple_testing import benjamini_hochberg
 from .fingerprint import fingerprint
+from .stratification import build as build_stratification
 
 def compare_snapshots(reference,candidate,config):
  if not reference or not candidate:raise ValueError('参考和候选快照均不得为空')
@@ -32,4 +33,7 @@ def compare_snapshots(reference,candidate,config):
  for i,q in zip(continuous,qvalues):findings[i]['metrics'].update(q_value=q,fdr_reject=bool(q<=config['fdr_alpha']))
  for f in findings:
   m=f['metrics'];f['status']='review' if m['fdr_reject'] or m['psi']>=.2 or m['js']>=.05 else 'quiet'
- return {'fingerprint':fingerprint(reference,candidate,config),'reference_n':len(ref),'candidate_n':len(cand),'reference_ids':[x['id'] for x in ref],'candidate_ids':[x['id'] for x in cand],'findings':findings,'test_family':{'method':'Benjamini-Hochberg','m':len(continuous),'alpha':config['fdr_alpha'],'features':[findings[i]['feature'] for i in continuous]},'method':'Reference-only frozen quantile/category bins; additive pseudocount; PSI natural log; JS log2; two-sided KS nonmissing; BH across selected numeric features','interpretation':'Distribution difference is not evidence of downstream model quality degradation; review markers combine FDR and explicit heuristic effect-size thresholds.'}
+ specs={f['feature']:f['metrics']['binning'] for f in findings}
+ stratification,weighted=build_stratification(ref,cand,specs,features,config['smoothing'])
+ for f in findings:f['metrics']['weighted']=weighted[f['feature']]
+ return {'fingerprint':fingerprint(reference,candidate,config),'reference_n':len(ref),'candidate_n':len(cand),'reference_ids':[x['id'] for x in ref],'candidate_ids':[x['id'] for x in cand],'findings':findings,'stratification':stratification,'test_family':{'method':'Benjamini-Hochberg','m':len(continuous),'alpha':config['fdr_alpha'],'features':[findings[i]['feature'] for i in continuous]},'method':'Reference-only frozen quantile/category bins shared by raw and weighted views; additive pseudocount; PSI natural log; JS log2; two-sided KS nonmissing; BH across selected numeric features; post-stratification weights from reference language×device composition','interpretation':'Weighted distributions adjust only for language×device composition and are not significance-tested; missing candidate strata are reported, never zero-filled; distribution difference is not evidence of downstream model quality degradation.'}

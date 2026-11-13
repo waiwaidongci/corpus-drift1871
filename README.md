@@ -28,14 +28,14 @@ docker compose exec -T backend python -m scripts.seed_demo
 3. 建立“十一月采集分布复校”，选择五特征，参考分位箱6、每桶平滑伪计数0.5、FDR α=.05。
 4. 先做全量比较，再可按语言zh/设备mobile过滤两边；任一切片不足5条会明确failed，不静默当无漂移。
 5. worker只用参考非缺失值拟合分位边界与参考类别字典，再将候选投影到冻结箱。
-6. 看PSI/JS效应量、连续KS原p/BH q及FDR拒绝；打开language看到__NEW__和__MISSING__独立计数。
+6. 看PSI/JS效应量、连续KS原p/BH q及FDR拒绝；打开language看到__NEW__和__MISSING__独立计数，并在分层校对中比较原始总体与按参考语言/设备构成加权的候选分布。
 7. 从当前发现建立“来源结构补采说明”，填写切片、目标200片段和采集理由。
 8. 叶砚以admin审稿，说明先核对来源再补采，后续质量变化须独立评测。
 9. 唐禾以viewer导出获批CSV，保留发现指标、校正q与审稿说明；不将漂移直接表述为质量劣化。
 
 ## 数据、分箱与统计口径
 
-五个核心实体CorpusSnapshot、Utterance、ComparisonRun、DriftFinding、ResamplingPlan，均贯穿表/model/schema/service/route/API/store/UI。六页为校对首页、语料快照、比较配置、漂移发现、补采审稿、校对留痕；HistogramBins、FindingSummary、RunTable跨页复用，同时共享Table/Badge/Notice/Empty。
+五个核心实体CorpusSnapshot、Utterance、ComparisonRun、DriftFinding、ResamplingPlan，均贯穿表/model/schema/service/route/API/store/UI。六页为校对首页、语料快照、比较配置、漂移发现、补采审稿、校对留痕；HistogramBins、FindingSummary、StratifiedCheck、RunTable跨页复用，同时共享Table/Badge/Notice/Empty。
 
 数值特征：duration（秒）、noise（dB）、token_rate（token/s）；类别：language、device。API导入20–5000条JSON数组，每项reference唯一、五特征完整，值可null；数值必须有限，类别必须非空字符串，保留名__NEW__/__MISSING__禁止作为真实类别。没有CSV解析器或真实采集接口。
 
@@ -45,9 +45,11 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 `services/comparison.py`：所选连续特征的非缺失值执行双侧两样本KS（SciPy ks_2samp，method=auto），统计量是两ECDF最大绝对差。类别不执行KS，p/q为null。`services/multiple_testing.py`对本运行全部所选连续特征组成的一个检验族做Benjamini–Hochberg：排序p_(i)，q_(i)=min_{j≥i}(m p_(j)/j,1)，再映回原顺序；q≤配置FDR α才标记拒绝。默认五特征中m=3，而不是把类别也算入m。BH的FDR解释有独立或适当正相关依赖等条件；这里没有证明真实语料任意依赖条件下的FDR控制。
 
+`services/stratification.py`：按language与device联合分层，层键为`["language","device"]`；每条片段只落入一个层，逐层样本数与总体精确对账（参考/候选各自`层内之和 + 维度缺失行 = 总体`，不等即`*_balances=false`）。所有层共用同一份全量参考冻结箱（`shared_full_reference_frozen_bins`）；每个层内仍按该冻结箱计数，不重新拟合。原始总体分布照旧输出；候选加权分布只在校验覆盖完整时计算：层内参考权重 w_s=n_ref_s/n_ref_stratified，加权候选计数=Σ_{已覆盖层} c_s(b)·n_ref_s/n_cand_s；加权候选总量应等于分层参考n，否则`total_matches_stratified_reference=false`。候选缺层（参考有、候选无）不补零、不插补，加权整体标记不可用；候选新增层（参考无、候选有）单列且不进入加权；language或device为null的片段记为维度缺失并单独对账，不伪装成真实类别层。每个特征输出逐层参考/候选计数、层权重与层内加权计数，`weighted_psi`/`weighted_js`沿用同一平滑散度公式，`weighted_review_suggested`只是PSI≥.2或JS≥.05的效应量启发，`tested_for_significance=false`、`test_family=null`，不执行KS/BH、不产生p/q。原始总体的KS/BH与“建议核对”照常计算并保留。
+
 “建议核对”取 q≤FDRα 或 PSI≥.2 或 JS≥.05，后两者是明确的效应量启发阈值，不是p值或显著性。页面分别显示FDR拒绝和建议核对，未拒绝也不声称分布相同。分布漂移不能证明下游模型变差，补采应先调查采样口径与来源，并独立评估质量。
 
-计算失败态包括空快照、空/不足5条的切片、参考连续常量/全缺失、连续有效值不足、非有限值、未知/重复特征及非法平滑/FDR/分箱参数。结果存完整冻结箱、两边计数/平滑比例、原p/q/检验族、参考/候选切片ID和输入SHA-256。指纹覆盖两边全量id/reference/全部五特征（包含null及未选特征）、配置和算法版本，按reference稳定排序；顺序改变不改指纹，任一影响字段变化会改指纹。
+计算失败态包括空快照、空/不足5条的切片、参考连续常量/全缺失、连续有效值不足、非有限值、未知/重复特征及非法平滑/FDR/分箱参数。结果存完整冻结箱、两边计数/平滑比例、原p/q/检验族、分层权重与逐层计数、参考/候选切片ID和输入SHA-256。分层结果（含缺层/新增层/维度缺失对账与加权不可用原因）与原始总体一并写入运行结果和`artifacts/comparison-{id}.json`，发现页可回看；加权分布没有p/q，也不进入BH检验族。指纹覆盖两边全量id/reference/全部五特征（包含null及未选特征）、配置和算法版本，按reference稳定排序；顺序改变不改指纹，任一影响字段变化会改指纹。
 
 ## 工程与开发
 
